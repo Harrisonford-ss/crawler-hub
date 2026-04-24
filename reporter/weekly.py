@@ -48,29 +48,69 @@ def generate(
     doubao_client: OpenAI,
     doubao_model: str,
     days_back: int = 7,
-    per_video_source: int = 10,
-    per_tool_source: int = 12,
+    per_video_source: int = 8,
+    per_tool_source: int = 10,
     out_dir: str | Path = "./data",
 ) -> dict:
-    """取 7 天数据 → 每个数据源各取 TOP N → 生成 markdown + JSON。
+    """取 7 天数据 → verdict 过滤 → 每源 top N → 生成 markdown + JSON。
 
-    per_video_source: 每个视频平台保留多少条（避免 YouTube 压抖音）
-    per_tool_source:  每个工具源保留多少条（避免 HF 压 B站/ModelScope）
+    过滤规则：
+    - verdict=C 直接淘汰
+    - relevance<5 直接淘汰
+    排序：(quality*0.4 + actionable*0.6) × log10(engagement) × exp(-days/14)
     """
     since = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat(timespec="seconds")
-    videos = db.fresh_videos(since)
-    tools = db.fresh_tools(since)
+    videos_raw = db.fresh_videos(since)
+    tools_raw = db.fresh_tools(since)
 
     import math
+    from datetime import datetime as _dt
+
+    def _passes_filter(item: dict) -> bool:
+        """硬门槛：relevance < 5 或 verdict=C 都淘汰。"""
+        if (item.get("verdict") or "").upper() == "C":
+            return False
+        if (item.get("relevance") or 0) < 5:
+            return False
+        return True
+
+    def _days_since(iso: str) -> float:
+        if not iso:
+            return 999.0
+        try:
+            # 兼容 RFC/ISO/ 纯日期格式
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S.%f"):
+                try:
+                    dt = _dt.strptime(iso[:19 if len(iso) >= 19 else len(iso)].replace("Z", ""), fmt[:19 if len(fmt) >= 19 else len(fmt)])
+                    return max(0.0, (_dt.now() - dt).total_seconds() / 86400.0)
+                except ValueError:
+                    continue
+        except Exception:
+            pass
+        return 999.0
+
+    def _time_decay(days: float) -> float:
+        """exp(-days/14)：2 周前衰减到 1/e，4 周前到 1/e²。"""
+        return math.exp(-min(days, 60) / 14.0)
+
     def _video_key(v: dict) -> float:
-        score = v.get("score") or 0
+        q = v.get("quality") or 0
+        a = v.get("actionable") or 0
         engagement = max(1, v.get("plays") or 0, v.get("likes") or 0)
-        return score * math.log10(engagement)
+        days = _days_since(v.get("publish_time") or v.get("crawled_at") or "")
+        return (q * 0.4 + a * 0.6) * math.log10(engagement) * _time_decay(days)
 
     def _tool_key(t: dict) -> float:
-        score = t.get("score") or 0
+        q = t.get("quality") or 0
+        a = t.get("actionable") or 0
         metric = max(1, t.get("metric") or 1)
-        return score * math.log10(metric)
+        days = _days_since(t.get("publish_time") or t.get("crawled_at") or "")
+        return (q * 0.4 + a * 0.6) * math.log10(metric) * _time_decay(days)
+
+    # 过滤（C 级 + relevance<5 淘汰）
+    videos = [v for v in videos_raw if _passes_filter(v)]
+    tools = [t for t in tools_raw if _passes_filter(t)]
+    print(f"[report] filter: videos {len(videos_raw)} → {len(videos)} ; tools {len(tools_raw)} → {len(tools)}")
 
     # 按平台/源分桶 → 每桶取 top N → 合并
     def _topn_per_group(items: list[dict], group_key: str, n: int, sort_key) -> list[dict]:
@@ -209,6 +249,11 @@ def _render_json(week: str, videos: list[dict], tools: list[dict],
                 "structure": v.get("structure") or "",
                 "style_tags": _json_list(v.get("style_tags")),
                 "score": v.get("score"),
+                "relevance": v.get("relevance"),
+                "quality": v.get("quality"),
+                "actionable": v.get("actionable"),
+                "verdict": v.get("verdict"),
+                "reason": v.get("reason"),
             }
             for v in videos
         ],
@@ -221,6 +266,11 @@ def _render_json(week: str, videos: list[dict], tools: list[dict],
                 "summary": t.get("summary") or "",
                 "stage_tags": _json_list(t.get("stage_tags")),
                 "score": t.get("score"),
+                "relevance": t.get("relevance"),
+                "quality": t.get("quality"),
+                "actionable": t.get("actionable"),
+                "verdict": t.get("verdict"),
+                "reason": t.get("reason"),
             }
             for t in tools
         ],

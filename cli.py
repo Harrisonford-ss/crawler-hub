@@ -181,14 +181,24 @@ def run_collect(cfg: dict, db: Db) -> dict:
 
 # -------- analyze --------
 
-def run_analyze(cfg: dict, db: Db, *, max_workers: int = 6) -> dict:
-    """豆包分析过去 7 天未打分的 videos/tools。"""
+def run_analyze(cfg: dict, db: Db, *, max_workers: int = 6,
+                 rescore_all: bool = False) -> dict:
+    """豆包分析过去 7 天未打分的 videos/tools。
+
+    rescore_all=True：强制重新打分所有条目（即便已有 score）——用于升级 prompt 后重跑。
+    """
     from datetime import datetime, timedelta, timezone
     client, text_model, vision_model = get_doubao(cfg)
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds")
 
+    def _needs_score(item: dict) -> bool:
+        if rescore_all:
+            return True
+        # 新 schema：没 verdict 就需要重新打
+        return item.get("verdict") is None
+
     # -- videos --
-    videos = [v for v in db.fresh_videos(since) if v.get("score") is None]
+    videos = [v for v in db.fresh_videos(since) if _needs_score(v)]
     print(f"[analyze] {len(videos)} videos to score")
     def _score_video(v: dict) -> None:
         row = VideoRow(
@@ -199,9 +209,13 @@ def run_analyze(cfg: dict, db: Db, *, max_workers: int = 6) -> dict:
             cover_url=v.get("cover_url", "") or "",
         )
         try:
-            hook, structure, tags, score = analyze_video(row, client=client, model=vision_model)
-            db.update_video_analysis(row.id, hook=hook, structure=structure,
-                                     style_tags=tags, score=score)
+            r = analyze_video(row, client=client, model=vision_model)
+            db.update_video_analysis(
+                row.id,
+                hook=r["hook"], structure=r["structure"], style_tags=r["style_tags"],
+                relevance=r["relevance"], quality=r["quality"], actionable=r["actionable"],
+                verdict=r["verdict"], reason=r["reason"],
+            )
         except Exception as e:
             print(f"[analyze] video {row.id} FAILED: {e}")
 
@@ -209,7 +223,7 @@ def run_analyze(cfg: dict, db: Db, *, max_workers: int = 6) -> dict:
         list(pool.map(_score_video, videos))
 
     # -- tools --
-    tools = [t for t in db.fresh_tools(since) if t.get("score") is None]
+    tools = [t for t in db.fresh_tools(since) if _needs_score(t)]
     print(f"[analyze] {len(tools)} tools to score")
     def _score_tool(t: dict) -> None:
         row = ToolRow(
@@ -218,8 +232,13 @@ def run_analyze(cfg: dict, db: Db, *, max_workers: int = 6) -> dict:
             metric=t.get("metric") or 0,
         )
         try:
-            summary, tags, score = analyze_tool(row, client=client, model=text_model)
-            db.update_tool_analysis(row.id, summary=summary, stage_tags=tags, score=score)
+            r = analyze_tool(row, client=client, model=text_model)
+            db.update_tool_analysis(
+                row.id,
+                summary=r["summary"], stage_tags=r["stage_tags"],
+                relevance=r["relevance"], quality=r["quality"], actionable=r["actionable"],
+                verdict=r["verdict"], reason=r["reason"],
+            )
         except Exception as e:
             print(f"[analyze] tool {row.id} FAILED: {e}")
 
@@ -343,6 +362,8 @@ def main() -> int:
         "collect", "analyze", "report", "push", "publish", "all",
     ])
     parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--rescore-all", action="store_true",
+                         help="analyze 阶段强制重新打分所有条目（用于升级 prompt 后）")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -352,7 +373,7 @@ def main() -> int:
     if args.stage in ("collect", "all"):
         run_collect(cfg, db)
     if args.stage in ("analyze", "all"):
-        run_analyze(cfg, db)
+        run_analyze(cfg, db, rescore_all=args.rescore_all)
     if args.stage in ("report", "all"):
         run_report(cfg, db)
     if args.stage in ("push", "all"):

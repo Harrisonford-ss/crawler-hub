@@ -28,7 +28,12 @@ CREATE TABLE IF NOT EXISTS videos (
     hook            TEXT,
     structure       TEXT,
     style_tags      TEXT,
-    score           REAL
+    score           REAL,
+    relevance       REAL,
+    quality         REAL,
+    actionable      REAL,
+    verdict         TEXT,
+    reason          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_platform_crawled
@@ -46,7 +51,12 @@ CREATE TABLE IF NOT EXISTS tools (
     raw_json        TEXT,
     summary         TEXT,
     stage_tags      TEXT,
-    score           REAL
+    score           REAL,
+    relevance       REAL,
+    quality         REAL,
+    actionable      REAL,
+    verdict         TEXT,
+    reason          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tools_source_crawled
@@ -60,6 +70,20 @@ CREATE TABLE IF NOT EXISTS reports (
     summary         TEXT
 );
 """
+
+# 向后兼容：老库用 score，新库用 verdict/relevance/quality/actionable
+MIGRATIONS = [
+    "ALTER TABLE videos ADD COLUMN relevance REAL",
+    "ALTER TABLE videos ADD COLUMN quality REAL",
+    "ALTER TABLE videos ADD COLUMN actionable REAL",
+    "ALTER TABLE videos ADD COLUMN verdict TEXT",
+    "ALTER TABLE videos ADD COLUMN reason TEXT",
+    "ALTER TABLE tools ADD COLUMN relevance REAL",
+    "ALTER TABLE tools ADD COLUMN quality REAL",
+    "ALTER TABLE tools ADD COLUMN actionable REAL",
+    "ALTER TABLE tools ADD COLUMN verdict TEXT",
+    "ALTER TABLE tools ADD COLUMN reason TEXT",
+]
 
 
 @dataclass
@@ -103,6 +127,12 @@ class Db:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            # 向后兼容：旧库做增量 migration
+            for stmt in MIGRATIONS:
+                try:
+                    c.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass   # column already exists
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -152,14 +182,20 @@ class Db:
             return [dict(row) for row in c.execute(sql, args)]
 
     def update_video_analysis(self, video_id: str, *, hook: str, structure: str,
-                              style_tags: list[str], score: float) -> None:
+                              style_tags: list[str],
+                              relevance: float, quality: float, actionable: float,
+                              verdict: str, reason: str) -> None:
+        # 合成 score（向后兼容老 web 代码）：quality*0.4 + actionable*0.6
+        score = round(quality * 0.4 + actionable * 0.6, 2)
         with self._conn() as c:
             c.execute(
                 """
-                UPDATE videos SET hook = ?, structure = ?, style_tags = ?, score = ?
+                UPDATE videos SET hook = ?, structure = ?, style_tags = ?, score = ?,
+                    relevance = ?, quality = ?, actionable = ?, verdict = ?, reason = ?
                 WHERE id = ?
                 """,
-                (hook, structure, json.dumps(style_tags, ensure_ascii=False), score, video_id),
+                (hook, structure, json.dumps(style_tags, ensure_ascii=False), score,
+                 relevance, quality, actionable, verdict, reason, video_id),
             )
 
     # --- tools ---
@@ -198,14 +234,19 @@ class Db:
             return [dict(row) for row in c.execute(sql, args)]
 
     def update_tool_analysis(self, tool_id: str, *, summary: str,
-                             stage_tags: list[str], score: float) -> None:
+                             stage_tags: list[str],
+                             relevance: float, quality: float, actionable: float,
+                             verdict: str, reason: str) -> None:
+        score = round(quality * 0.4 + actionable * 0.6, 2)
         with self._conn() as c:
             c.execute(
                 """
-                UPDATE tools SET summary = ?, stage_tags = ?, score = ?
+                UPDATE tools SET summary = ?, stage_tags = ?, score = ?,
+                    relevance = ?, quality = ?, actionable = ?, verdict = ?, reason = ?
                 WHERE id = ?
                 """,
-                (summary, json.dumps(stage_tags, ensure_ascii=False), score, tool_id),
+                (summary, json.dumps(stage_tags, ensure_ascii=False), score,
+                 relevance, quality, actionable, verdict, reason, tool_id),
             )
 
     # --- reports ---
