@@ -48,17 +48,19 @@ def generate(
     doubao_client: OpenAI,
     doubao_model: str,
     days_back: int = 7,
-    top_videos: int = 40,
-    top_tools: int = 30,
+    per_video_source: int = 10,
+    per_tool_source: int = 12,
     out_dir: str | Path = "./data",
 ) -> dict:
-    """取 7 天数据 → 生成 markdown + JSON，保存到 data/，并写入 reports 表。"""
+    """取 7 天数据 → 每个数据源各取 TOP N → 生成 markdown + JSON。
+
+    per_video_source: 每个视频平台保留多少条（避免 YouTube 压抖音）
+    per_tool_source:  每个工具源保留多少条（避免 HF 压 B站/ModelScope）
+    """
     since = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat(timespec="seconds")
     videos = db.fresh_videos(since)
     tools = db.fresh_tools(since)
 
-    # 排序：视频按 豆包分数 * log(engagement)；工具按 豆包分数 * log(metric)
-    # 用 max(plays, likes) —— 抖音网页端隐藏播放数，只看 likes；其他平台用 plays
     import math
     def _video_key(v: dict) -> float:
         score = v.get("score") or 0
@@ -70,11 +72,21 @@ def generate(
         metric = max(1, t.get("metric") or 1)
         return score * math.log10(metric)
 
-    videos.sort(key=_video_key, reverse=True)
-    tools.sort(key=_tool_key, reverse=True)
+    # 按平台/源分桶 → 每桶取 top N → 合并
+    def _topn_per_group(items: list[dict], group_key: str, n: int, sort_key) -> list[dict]:
+        from collections import defaultdict
+        buckets = defaultdict(list)
+        for it in items:
+            buckets[it.get(group_key, "?")].append(it)
+        out: list[dict] = []
+        for grp, items_ in buckets.items():
+            items_.sort(key=sort_key, reverse=True)
+            out.extend(items_[:n])
+        out.sort(key=sort_key, reverse=True)
+        return out
 
-    top_v = videos[:top_videos]
-    top_t = tools[:top_tools]
+    top_v = _topn_per_group(videos, "platform", per_video_source, _video_key)
+    top_t = _topn_per_group(tools, "source", per_tool_source, _tool_key)
 
     week = week_code()
     summary = _generate_overview(top_v, top_t, doubao_client, doubao_model)
