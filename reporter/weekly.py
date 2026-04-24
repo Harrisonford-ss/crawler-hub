@@ -48,8 +48,8 @@ def generate(
     doubao_client: OpenAI,
     doubao_model: str,
     days_back: int = 7,
-    top_videos: int = 10,
-    top_tools: int = 15,
+    top_videos: int = 40,
+    top_tools: int = 30,
     out_dir: str | Path = "./data",
 ) -> dict:
     """取 7 天数据 → 生成 markdown + JSON，保存到 data/，并写入 reports 表。"""
@@ -57,12 +57,13 @@ def generate(
     videos = db.fresh_videos(since)
     tools = db.fresh_tools(since)
 
-    # 排序：视频按 豆包分数 * log(播放量)；工具按 豆包分数 * log(metric)
+    # 排序：视频按 豆包分数 * log(engagement)；工具按 豆包分数 * log(metric)
+    # 用 max(plays, likes) —— 抖音网页端隐藏播放数，只看 likes；其他平台用 plays
     import math
     def _video_key(v: dict) -> float:
         score = v.get("score") or 0
-        plays = max(1, v.get("plays") or 1)
-        return score * math.log10(plays)
+        engagement = max(1, v.get("plays") or 0, v.get("likes") or 0)
+        return score * math.log10(engagement)
 
     def _tool_key(t: dict) -> float:
         score = t.get("score") or 0
