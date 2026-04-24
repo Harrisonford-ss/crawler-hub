@@ -43,7 +43,7 @@ def get_doubao(cfg: dict) -> tuple[OpenAI, str, str]:
 
 # -------- collect --------
 
-ALL_SOURCES = ["huggingface", "modelscope", "bilibili", "youtube_shorts", "douyin"]
+ALL_SOURCES = ["huggingface", "modelscope", "bilibili", "bilibili_video", "youtube_shorts", "douyin"]
 
 
 def run_collect(cfg: dict, db: Db) -> dict:
@@ -88,6 +88,18 @@ def run_collect(cfg: dict, db: Db) -> dict:
             print(f"[collect] bilibili: {len(bi_rows)} items")
         except Exception as e:
             print(f"[collect] bilibili FAILED: {e}")
+
+    if "bilibili_video" in enabled:
+        try:
+            biv_cfg = cfg.get("bilibili_video") or {}
+            biv_rows = bilibili.fetch_video_keywords(
+                biv_cfg.get("keywords") or [],
+                per_keyword=biv_cfg.get("per_keyword", 8),
+            )
+            stats["bilibili_video"] = db.upsert_videos(biv_rows)
+            print(f"[collect] bilibili_video: {len(biv_rows)} videos")
+        except Exception as e:
+            print(f"[collect] bilibili_video FAILED: {e}")
 
     if "youtube_shorts" in enabled:
         try:
