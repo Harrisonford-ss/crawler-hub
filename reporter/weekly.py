@@ -48,8 +48,8 @@ def generate(
     doubao_client: OpenAI,
     doubao_model: str,
     days_back: int = 7,
-    per_video_source: int = 8,
-    per_tool_source: int = 10,
+    per_video_source: int = 5,
+    per_tool_source: int = 6,
     out_dir: str | Path = "./data",
 ) -> dict:
     """取 7 天数据 → verdict 过滤 → 每源 top N → 生成 markdown + JSON。
