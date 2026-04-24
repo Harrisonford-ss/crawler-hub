@@ -1,0 +1,60 @@
+# crawler-hub 配置文件
+# 复制为 config.yaml 后填入真实值。config.yaml 已被 .gitignore 忽略。
+
+# === LLM ===
+# 豆包（火山引擎方舟），OpenAI 兼容接口
+doubao:
+  api_key: "YOUR_DOUBAO_API_KEY"           # 从 ai-drama-pipeline 复用
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  text_model: "doubao-seed-1-6-flash-250715"
+  vision_model: "doubao-seed-1-6-250615"   # 多模态，看视频用
+
+# === 数据源 ===
+
+# 抖音（调用本地部署的 Douyin_TikTok_Download_API）
+douyin:
+  api_base: "http://127.0.0.1:8000"        # docker 部署后的 URL
+  hot_endpoint: "/api/douyin/web/fetch_hot_search_video_list"
+  detail_endpoint: "/api/douyin/web/fetch_one_video"
+  top_k: 30
+
+# YouTube Shorts
+youtube:
+  api_key: "YOUR_YOUTUBE_DATA_API_KEY"     # console.cloud.google.com 申请
+  query: "AI short film | AI video | Sora | Veo | Runway"
+  region_code: "US"
+  max_results: 30
+
+# B站（用 bilibili-api-python，公开内容无需 cookie）
+bilibili:
+  keywords:
+    - "AI 短剧"
+    - "AI 视频生成"
+    - "Stable Diffusion"
+    - "ComfyUI"
+    - "Sora 教程"
+  per_keyword: 6
+  sessdata: ""                             # 可留空，留空只能拿公开数据
+
+# HuggingFace
+huggingface:
+  token: ""                                # 可留空，公开 trending 不需要
+  trending_limit: 30
+  filter_tags: ["text-to-video", "image-to-video", "text-to-image", "tts", "audio"]
+
+# === 推送 ===
+server_chan:
+  sct_key: "YOUR_SCT_KEY"                  # sct.ftqq.com 注册后获得，格式 SCT...
+  channel: "9"                             # 9 = 微信服务号；其他渠道见官网
+
+# === GitHub 数据 repo（Zeabur 自动构建源）===
+github:
+  data_repo: "Harrisonford-ss/crawler-hub-data"
+  data_branch: "main"
+  token: "YOUR_GITHUB_TOKEN"               # 需要 contents:write 权限
+
+# === 运行时 ===
+runtime:
+  output_dir: "./data"                     # SQLite + 周报 JSON 落地
+  timezone: "Asia/Shanghai"
+  log_level: "INFO"

@@ -1,0 +1,10 @@
+config.yaml
+data/*.db
+data/*.json
+*.pyc
+__pycache__/
+.venv/
+.pytest_cache/
+.env
+*.log
+secrets/
