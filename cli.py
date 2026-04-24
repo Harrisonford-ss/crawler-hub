@@ -25,7 +25,7 @@ from analyzers.tool_analyzer import analyze_tool
 from analyzers.video_analyzer import analyze_video
 from notifier.server_chan import push as sct_push
 from reporter.weekly import generate as generate_weekly
-from sources import bilibili, douyin, huggingface, modelscope, youtube_shorts
+from sources import arxiv, bilibili, douyin, huggingface, modelscope, youtube_shorts
 from storage.db import Db, ToolRow, VideoRow
 
 
@@ -43,7 +43,7 @@ def get_doubao(cfg: dict) -> tuple[OpenAI, str, str]:
 
 # -------- collect --------
 
-ALL_SOURCES = ["huggingface", "modelscope", "bilibili", "bilibili_video", "youtube_shorts", "douyin"]
+ALL_SOURCES = ["huggingface", "modelscope", "bilibili", "bilibili_video", "youtube_shorts", "douyin", "arxiv"]
 
 
 def run_collect(cfg: dict, db: Db) -> dict:
@@ -100,6 +100,18 @@ def run_collect(cfg: dict, db: Db) -> dict:
             print(f"[collect] bilibili_video: {len(biv_rows)} videos")
         except Exception as e:
             print(f"[collect] bilibili_video FAILED: {e}")
+
+    if "arxiv" in enabled:
+        try:
+            ax_cfg = cfg.get("arxiv") or {}
+            ax_rows = arxiv.fetch_recent(
+                queries=ax_cfg.get("queries"),
+                max_per_query=ax_cfg.get("max_per_query", 15),
+            )
+            stats["arxiv"] = db.upsert_tools(ax_rows)
+            print(f"[collect] arxiv: {len(ax_rows)} papers")
+        except Exception as e:
+            print(f"[collect] arxiv FAILED: {e}")
 
     if "youtube_shorts" in enabled:
         try:
