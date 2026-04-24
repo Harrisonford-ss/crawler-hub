@@ -25,7 +25,7 @@ from analyzers.tool_analyzer import analyze_tool
 from analyzers.video_analyzer import analyze_video
 from notifier.server_chan import push as sct_push
 from reporter.weekly import generate as generate_weekly
-from sources import arxiv, bilibili, douyin, huggingface, modelscope, youtube_shorts
+from sources import arxiv, bilibili, douyin, github_trending, huggingface, modelscope, rss_news, youtube_shorts
 from storage.db import Db, ToolRow, VideoRow
 
 
@@ -43,7 +43,7 @@ def get_doubao(cfg: dict) -> tuple[OpenAI, str, str]:
 
 # -------- collect --------
 
-ALL_SOURCES = ["huggingface", "modelscope", "bilibili", "bilibili_video", "youtube_shorts", "douyin", "arxiv"]
+ALL_SOURCES = ["huggingface", "modelscope", "bilibili", "bilibili_video", "youtube_shorts", "douyin", "arxiv", "github", "news"]
 
 
 def run_collect(cfg: dict, db: Db) -> dict:
@@ -112,6 +112,35 @@ def run_collect(cfg: dict, db: Db) -> dict:
             print(f"[collect] arxiv: {len(ax_rows)} papers")
         except Exception as e:
             print(f"[collect] arxiv FAILED: {e}")
+
+    if "news" in enabled:
+        try:
+            news_cfg = cfg.get("news") or {}
+            feeds = None
+            if news_cfg.get("feeds"):
+                feeds = [rss_news.FeedSource(name=f["name"], url=f["url"])
+                         for f in news_cfg["feeds"]]
+            news_rows = rss_news.fetch_news(
+                feeds=feeds,
+                max_per_feed=news_cfg.get("max_per_feed", 12),
+            )
+            stats["news"] = db.upsert_tools(news_rows)
+            print(f"[collect] news: {len(news_rows)} articles")
+        except Exception as e:
+            print(f"[collect] news FAILED: {e}")
+
+    if "github" in enabled:
+        try:
+            gh_cfg = cfg.get("github") or {}
+            gh_rows = github_trending.fetch_trending(
+                token=gh_cfg.get("token") or None,
+                days_back=gh_cfg.get("days_back", 14),
+                per_query=gh_cfg.get("per_query", 8),
+            )
+            stats["github"] = db.upsert_tools(gh_rows)
+            print(f"[collect] github: {len(gh_rows)} repos")
+        except Exception as e:
+            print(f"[collect] github FAILED: {e}")
 
     if "youtube_shorts" in enabled:
         try:
