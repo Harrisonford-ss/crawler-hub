@@ -25,7 +25,7 @@ from analyzers.tool_analyzer import analyze_tool
 from analyzers.video_analyzer import analyze_video
 from notifier.server_chan import push as sct_push
 from reporter.weekly import generate as generate_weekly
-from sources import bilibili, douyin, huggingface, youtube_shorts
+from sources import bilibili, douyin, huggingface, modelscope, youtube_shorts
 from storage.db import Db, ToolRow, VideoRow
 
 
@@ -43,69 +43,85 @@ def get_doubao(cfg: dict) -> tuple[OpenAI, str, str]:
 
 # -------- collect --------
 
+ALL_SOURCES = ["huggingface", "modelscope", "bilibili", "youtube_shorts", "douyin"]
+
+
 def run_collect(cfg: dict, db: Db) -> dict:
-    """从 4 个源拉数据入库。返回每个源的命中条数。"""
+    """从启用的源拉数据入库。通过 runtime.enabled_sources 控制哪些源启用。"""
     stats: dict[str, int] = {}
+    enabled = set((cfg.get("runtime") or {}).get("enabled_sources") or ALL_SOURCES)
+    print(f"[collect] enabled sources: {sorted(enabled)}")
 
-    # 1. HuggingFace
-    try:
-        hf_cfg = cfg.get("huggingface") or {}
-        hf_rows = huggingface.fetch_trending(
-            token=hf_cfg.get("token") or None,
-            limit=hf_cfg.get("trending_limit", 30),
-            filter_tags=hf_cfg.get("filter_tags"),
-        )
-        stats["huggingface"] = db.upsert_tools(hf_rows)
-        print(f"[collect] huggingface: {len(hf_rows)} items")
-    except Exception as e:
-        print(f"[collect] huggingface FAILED: {e}")
-
-    # 2. B站
-    try:
-        bi_cfg = cfg.get("bilibili") or {}
-        bi_rows = bilibili.fetch_keywords(
-            bi_cfg.get("keywords") or [],
-            per_keyword=bi_cfg.get("per_keyword", 6),
-        )
-        stats["bilibili"] = db.upsert_tools(bi_rows)
-        print(f"[collect] bilibili: {len(bi_rows)} items")
-    except Exception as e:
-        print(f"[collect] bilibili FAILED: {e}")
-
-    # 3. YouTube Shorts
-    try:
-        yt_cfg = cfg.get("youtube") or {}
-        if yt_cfg.get("api_key"):
-            yt_rows = youtube_shorts.fetch_shorts(
-                api_key=yt_cfg["api_key"],
-                query=yt_cfg.get("query", "AI short film | AI video"),
-                region_code=yt_cfg.get("region_code", "US"),
-                max_results=yt_cfg.get("max_results", 30),
+    if "huggingface" in enabled:
+        try:
+            hf_cfg = cfg.get("huggingface") or {}
+            hf_rows = huggingface.fetch_trending(
+                token=hf_cfg.get("token") or None,
+                limit=hf_cfg.get("trending_limit", 30),
+                filter_tags=hf_cfg.get("filter_tags"),
             )
-            stats["youtube_shorts"] = db.upsert_videos(yt_rows)
-            print(f"[collect] youtube_shorts: {len(yt_rows)} videos")
-    except Exception as e:
-        print(f"[collect] youtube_shorts FAILED: {e}")
+            stats["huggingface"] = db.upsert_tools(hf_rows)
+            print(f"[collect] huggingface: {len(hf_rows)} items")
+        except Exception as e:
+            print(f"[collect] huggingface FAILED: {e}")
 
-    # 4. 抖音
-    try:
-        dy_cfg = cfg.get("douyin") or {}
-        sec_ids = dy_cfg.get("sec_user_ids") or []
-        if sec_ids and Path(dy_cfg.get("cookie_file", "")).exists():
-            # 先推 cookie 进容器
-            cookie = Path(dy_cfg["cookie_file"]).read_text().strip()
-            douyin.update_cookie(dy_cfg["api_base"], cookie)
-            dy_rows = douyin.fetch_from_accounts(
-                api_base=dy_cfg["api_base"],
-                sec_user_ids=sec_ids,
-                count_per_user=dy_cfg.get("count_per_user", 10),
+    if "modelscope" in enabled:
+        try:
+            ms_cfg = cfg.get("modelscope") or {}
+            ms_rows = modelscope.fetch_trending(
+                limit=ms_cfg.get("trending_limit", 40),
+                filter_tasks=ms_cfg.get("filter_tasks"),
             )
-            stats["douyin"] = db.upsert_videos(dy_rows)
-            print(f"[collect] douyin: {len(dy_rows)} videos from {len(sec_ids)} accounts")
-        else:
-            print(f"[collect] douyin: SKIPPED (no sec_user_ids or cookie file)")
-    except Exception as e:
-        print(f"[collect] douyin FAILED: {e}")
+            stats["modelscope"] = db.upsert_tools(ms_rows)
+            print(f"[collect] modelscope: {len(ms_rows)} items")
+        except Exception as e:
+            print(f"[collect] modelscope FAILED: {e}")
+
+    if "bilibili" in enabled:
+        try:
+            bi_cfg = cfg.get("bilibili") or {}
+            bi_rows = bilibili.fetch_keywords(
+                bi_cfg.get("keywords") or [],
+                per_keyword=bi_cfg.get("per_keyword", 6),
+            )
+            stats["bilibili"] = db.upsert_tools(bi_rows)
+            print(f"[collect] bilibili: {len(bi_rows)} items")
+        except Exception as e:
+            print(f"[collect] bilibili FAILED: {e}")
+
+    if "youtube_shorts" in enabled:
+        try:
+            yt_cfg = cfg.get("youtube") or {}
+            if yt_cfg.get("api_key"):
+                yt_rows = youtube_shorts.fetch_shorts(
+                    api_key=yt_cfg["api_key"],
+                    query=yt_cfg.get("query", "AI short film | AI video"),
+                    region_code=yt_cfg.get("region_code", "US"),
+                    max_results=yt_cfg.get("max_results", 30),
+                )
+                stats["youtube_shorts"] = db.upsert_videos(yt_rows)
+                print(f"[collect] youtube_shorts: {len(yt_rows)} videos")
+        except Exception as e:
+            print(f"[collect] youtube_shorts FAILED: {e}")
+
+    if "douyin" in enabled:
+        try:
+            dy_cfg = cfg.get("douyin") or {}
+            sec_ids = dy_cfg.get("sec_user_ids") or []
+            if sec_ids and Path(dy_cfg.get("cookie_file", "")).exists():
+                cookie = Path(dy_cfg["cookie_file"]).read_text().strip()
+                douyin.update_cookie(dy_cfg["api_base"], cookie)
+                dy_rows = douyin.fetch_from_accounts(
+                    api_base=dy_cfg["api_base"],
+                    sec_user_ids=sec_ids,
+                    count_per_user=dy_cfg.get("count_per_user", 10),
+                )
+                stats["douyin"] = db.upsert_videos(dy_rows)
+                print(f"[collect] douyin: {len(dy_rows)} videos from {len(sec_ids)} accounts")
+            else:
+                print(f"[collect] douyin: SKIPPED (no sec_user_ids or cookie file)")
+        except Exception as e:
+            print(f"[collect] douyin FAILED: {e}")
 
     return stats
 

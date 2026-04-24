@@ -1,7 +1,6 @@
 #!/bin/bash
-# 每周一 08:00 (Asia/Shanghai) 由 cron 触发。
-# 把整个 pipeline 串起来跑完：collect → analyze → report → push → publish
-# 所有输出写到 logs/weekly_<timestamp>.log，cron 本身只管触发。
+# 111.229.73.65 (国内 always-on) 每周一 08:00 运行。
+# 先合并 43.165 的海外 DB，再 collect 国内 + analyze + report + push + publish。
 
 set -eu
 export TZ=Asia/Shanghai
@@ -13,13 +12,24 @@ mkdir -p logs
 TS=$(date +%Y%m%d_%H%M%S)
 LOG="logs/weekly_${TS}.log"
 
-echo "=== crawler-hub weekly run @ $(date '+%Y-%m-%d %H:%M:%S %Z') ===" | tee -a "$LOG"
+echo "=== crawler-hub weekly run @ $(date '+%F %T %Z') ===" | tee -a "$LOG"
+
+# 0. 合并 43.165 scp 过来的海外 DB（如果存在）
+OVERSEAS_DB=/tmp/overseas.db
+if [ -f "$OVERSEAS_DB" ]; then
+  echo "--- merging overseas db ---" | tee -a "$LOG"
+  ./.venv/bin/python scheduler/merge_db.py "$OVERSEAS_DB" 2>&1 | tee -a "$LOG"
+  # 避免下次重复合并旧数据
+  mv "$OVERSEAS_DB" "${OVERSEAS_DB}.consumed.$(date +%s)" 2>/dev/null || true
+else
+  echo "--- no overseas db to merge (43.165 may not have run yet) ---" | tee -a "$LOG"
+fi
 
 run_stage() {
   local stage=$1
   echo "--- stage: $stage ---" | tee -a "$LOG"
   if ! ./.venv/bin/python cli.py "$stage" 2>&1 | tee -a "$LOG"; then
-    echo "!!! stage $stage failed, continuing anyway" | tee -a "$LOG"
+    echo "!!! stage $stage failed, continuing" | tee -a "$LOG"
   fi
 }
 
@@ -29,7 +39,7 @@ run_stage report
 run_stage push
 run_stage publish
 
-echo "=== done @ $(date '+%Y-%m-%d %H:%M:%S %Z') ===" | tee -a "$LOG"
+echo "=== done @ $(date '+%F %T %Z') ===" | tee -a "$LOG"
 
-# 保留最近 8 周的日志，其余清理
 find logs/ -name "weekly_*.log" -mtime +60 -delete 2>/dev/null || true
+find /tmp/ -maxdepth 1 -name "overseas.db.consumed.*" -mtime +14 -delete 2>/dev/null || true
