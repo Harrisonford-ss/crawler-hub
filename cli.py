@@ -207,9 +207,63 @@ def _desp_from_report(report: dict) -> str:
 # -------- publish --------
 
 def run_publish(cfg: dict) -> None:
-    """把 data/latest.json 推到 crawler-hub-data repo。（V1 暂留 stub）"""
-    # V1 先留空；web 部署起来后再补
-    print("[publish] TODO: implement git push to crawler-hub-data")
+    """把最新 weekly JSON 推到 crawler-hub-data repo，触发 Zeabur 自动构建。
+
+    策略：克隆 → 覆盖 data/ 目录下的 latest.json + 本周 JSON → commit → push
+    """
+    import subprocess
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    gh = cfg.get("github") or {}
+    token = gh.get("token")
+    repo = gh.get("data_repo")
+    branch = gh.get("data_branch", "main")
+    if not token or not repo:
+        print("[publish] github.token / github.data_repo 未配置，跳过")
+        return
+
+    out_dir = (cfg.get("runtime") or {}).get("output_dir", "./data")
+    src_latest = Path(out_dir) / "latest.json"
+    if not src_latest.exists():
+        print(f"[publish] {src_latest} 不存在，跳过")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_url = f"https://x-access-token:{token}@github.com/{repo}.git"
+        r = subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", branch, repo_url, tmp],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print(f"[publish] clone failed: {r.stderr[:200]}"); return
+
+        data_dst = Path(tmp) / "data"
+        data_dst.mkdir(exist_ok=True)
+        shutil.copy(src_latest, data_dst / "latest.json")
+        # 同时把本周的 YYYY-WXX.json 也带上
+        for f in Path(out_dir).glob("weekly_*.json"):
+            shutil.copy(f, data_dst / f.name)
+
+        # commit only if there are diffs
+        subprocess.run(["git", "-C", tmp, "add", "data/"], check=True)
+        diff = subprocess.run(["git", "-C", tmp, "diff", "--cached", "--quiet"],
+                               capture_output=True)
+        if diff.returncode == 0:
+            print("[publish] nothing to commit (data unchanged)")
+            return
+
+        from datetime import datetime
+        msg = f"chore: update weekly data {datetime.now().strftime('%Y-%m-%d')}"
+        subprocess.run(["git", "-C", tmp, "-c", "user.name=crawler-hub bot",
+                       "-c", "user.email=crawler@eliza666.com",
+                       "commit", "-m", msg], check=True)
+        r = subprocess.run(["git", "-C", tmp, "push", "origin", branch],
+                            capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[publish] push failed: {r.stderr[:200]}"); return
+        print(f"[publish] ✓ pushed to {repo}@{branch}")
 
 
 # -------- main --------
