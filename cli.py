@@ -295,10 +295,7 @@ def _desp_from_report(report: dict) -> str:
 # -------- publish --------
 
 def run_publish(cfg: dict) -> None:
-    """把最新 weekly JSON 推到 crawler-hub-data repo，触发 Zeabur 自动构建。
-
-    策略：克隆 → 覆盖 data/ 目录下的 latest.json + 本周 JSON → commit → push
-    """
+    """把最新 weekly JSON + 覆盖图 publish 到 crawler-hub-data repo，触发 Zeabur 自动构建。"""
     import subprocess
     import shutil
     import tempfile
@@ -318,6 +315,12 @@ def run_publish(cfg: dict) -> None:
         print(f"[publish] {src_latest} 不存在，跳过")
         return
 
+    # cover 目录：reporter 已经下载到 data/../covers/<platform>/，publish 时全量 sync
+    out_dir = (cfg.get("runtime") or {}).get("output_dir", "./data")
+    local_covers_root = Path(out_dir).parent / "covers"
+    # 兼容老路径：家用机 scp 来的 xhs cover
+    xhs_covers_src = Path("/home/ubuntu/incoming/xhs_covers")
+
     with tempfile.TemporaryDirectory() as tmp:
         repo_url = f"https://x-access-token:{token}@github.com/{repo}.git"
         r = subprocess.run(
@@ -334,8 +337,31 @@ def run_publish(cfg: dict) -> None:
         for f in Path(out_dir).glob("weekly_*.json"):
             shutil.copy(f, data_dst / f.name)
 
+        # 复制本地全量 covers/<platform>/ 到 data repo（reporter 已经下载好）
+        if local_covers_root.exists():
+            n_covers = 0
+            for cov in local_covers_root.rglob("*"):
+                if cov.is_file():
+                    rel = cov.relative_to(local_covers_root)
+                    dst = Path(tmp) / "covers" / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(cov, dst)
+                    n_covers += 1
+            print(f"[publish] copied {n_covers} local covers")
+
+        # 兼容：家用机 scp 来的 xhs cover 也搬过去
+        if xhs_covers_src.exists():
+            xhs_dst = Path(tmp) / "covers" / "xhs"
+            xhs_dst.mkdir(parents=True, exist_ok=True)
+            n_xhs = 0
+            for cov in xhs_covers_src.glob("*"):
+                if cov.is_file():
+                    shutil.copy(cov, xhs_dst / cov.name)
+                    n_xhs += 1
+            print(f"[publish] copied {n_xhs} xhs covers from incoming/")
+
         # commit only if there are diffs
-        subprocess.run(["git", "-C", tmp, "add", "data/"], check=True)
+        subprocess.run(["git", "-C", tmp, "add", "data/", "covers/"], check=True)
         diff = subprocess.run(["git", "-C", tmp, "diff", "--cached", "--quiet"],
                                capture_output=True)
         if diff.returncode == 0:

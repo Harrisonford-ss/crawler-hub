@@ -74,6 +74,39 @@ def generate(
             return False
         return True
 
+    def _passes_engagement(item: dict, is_video: bool) -> bool:
+        """互动量门槛——爆款视频必有人看；工具来源用 metric 区分"""
+        if not is_video:
+            # 工具：metric 代表 downloads/stars/播放量
+            # arxiv/news metric=0 无意义，按 verdict 只保 S/A，B 以下淘汰
+            source = item.get("source", "")
+            metric = item.get("metric") or 0
+            if source in ("arxiv", "news"):
+                # 这俩没 metric 可比，靠 verdict 过滤即可
+                return (item.get("verdict") or "").upper() in ("S", "A")
+            if source == "huggingface":
+                return metric >= 10000      # HF 下载 1 万起步
+            if source == "modelscope":
+                return metric >= 5000       # ModelScope 下载 5 千起步
+            if source == "github":
+                return metric >= 100        # GitHub 星 100 起步
+            if source == "bilibili":
+                return metric >= 50000      # B 站教程播放 5 万起步
+            return metric >= 100
+        # 视频：平台 plays/likes 门槛
+        plat = item.get("platform", "")
+        plays = item.get("plays") or 0
+        likes = item.get("likes") or 0
+        engagement = max(plays, likes)
+        # 抖音/小红书 plays 被平台隐藏，用 likes 代替；B 站/YT plays 明确
+        thresholds = {
+            "douyin":         500,      # 点赞 500 起步
+            "xiaohongshu":    300,      # 点赞 300 起步
+            "bilibili_video": 100000,   # 播放 10 万起步
+            "youtube_shorts": 50000,    # 播放 5 万起步
+        }
+        return engagement >= thresholds.get(plat, 1000)
+
     def _days_since(iso: str) -> float:
         if not iso:
             return 999.0
@@ -107,9 +140,9 @@ def generate(
         days = _days_since(t.get("publish_time") or t.get("crawled_at") or "")
         return (q * 0.4 + a * 0.6) * math.log10(metric) * _time_decay(days)
 
-    # 过滤（C 级 + relevance<5 淘汰）
-    videos = [v for v in videos_raw if _passes_filter(v)]
-    tools = [t for t in tools_raw if _passes_filter(t)]
+    # 过滤两层：verdict + 互动量
+    videos = [v for v in videos_raw if _passes_filter(v) and _passes_engagement(v, True)]
+    tools = [t for t in tools_raw if _passes_filter(t) and _passes_engagement(t, False)]
     print(f"[report] filter: videos {len(videos_raw)} → {len(videos)} ; tools {len(tools_raw)} → {len(tools)}")
 
     # 按平台/源分桶 → 每桶取 top N → 合并
@@ -127,6 +160,9 @@ def generate(
 
     top_v = _topn_per_group(videos, "platform", per_video_source, _video_key)
     top_t = _topn_per_group(tools, "source", per_tool_source, _tool_key)
+
+    # 把所有 http(s) 的 cover URL 下载到本地（避开 CDN referer/expire 问题）
+    _localize_covers(top_v, out_dir=Path(out_dir))
 
     week = week_code()
     summary = _generate_overview(top_v, top_t, doubao_client, doubao_model)
@@ -148,6 +184,55 @@ def generate(
 
     return {"week": week, "markdown": md, "json": json_blob,
             "video_count": len(top_v), "tool_count": len(top_t)}
+
+
+def _localize_covers(videos: list[dict], out_dir: Path) -> None:
+    """把所有 cover_url 下载到 covers/<platform>/<id>.jpg 本地化。
+
+    避开 CDN referer 校验 + 时效 URL 过期问题。
+    家用机已经下载过的 xhs cover 不会重新下载（cover_url 已是相对路径）。
+    """
+    import urllib.request
+    import urllib.error
+    import ssl
+    import hashlib
+
+    covers_root = out_dir.parent / "covers"   # data/../covers
+    covers_root.mkdir(exist_ok=True)
+    ctx_ssl = ssl.create_default_context()
+    ctx_ssl.check_hostname = False
+    ctx_ssl.verify_mode = ssl.CERT_NONE
+
+    n_localized = 0
+    n_skipped = 0
+    n_failed = 0
+
+    for v in videos:
+        url = v.get("cover_url", "")
+        if not url or not url.startswith("http"):
+            n_skipped += 1   # 已经是本地路径或空
+            continue
+        plat = v.get("platform", "other")
+        # 用 url hash 当文件名，简单稳定
+        ext = ".webp" if "webp" in url.lower() else ".jpg"
+        fname = hashlib.md5(url.encode()).hexdigest()[:16] + ext
+        plat_dir = covers_root / plat
+        plat_dir.mkdir(exist_ok=True)
+        local_path = plat_dir / fname
+        if not local_path.exists():
+            try:
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+                    # 不发 referer（因为各 CDN 偏好都是无 referer 时放行，有 referer 反而被卡）
+                })
+                with urllib.request.urlopen(req, timeout=10, context=ctx_ssl) as resp:
+                    local_path.write_bytes(resp.read())
+                n_localized += 1
+            except Exception as e:
+                n_failed += 1
+                continue
+        v["cover_url"] = f"covers/{plat}/{fname}"
+    print(f"[report] covers: localized={n_localized} skipped={n_skipped} failed={n_failed}")
 
 
 def _generate_overview(videos: list[dict], tools: list[dict],
